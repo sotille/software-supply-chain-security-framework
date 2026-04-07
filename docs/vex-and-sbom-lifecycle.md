@@ -244,6 +244,223 @@ VEX assertions are security claims. They require governance to prevent misuse (e
 
 ---
 
+### VEX Staleness Detection and Expiration Workflows
+
+A `not_affected` VEX assertion that was correct at time of issue may become incorrect as the codebase evolves. Refactoring can introduce previously absent code paths; new features may call library functions that were previously unreachable. VEX assertions must be treated as perishable claims — not permanent suppressions.
+
+**When a VEX assertion can become stale:**
+
+| Change Type | Risk of VEX Staleness | Detection Method |
+|-------------|----------------------|------------------|
+| Component upgrade (affected library) | High — new version may behave differently | Trigger VEX re-review on every upgrade of the affected package |
+| Refactoring in consuming service | Medium — newly added code paths may reach vulnerable functions | SAST/call-graph analysis re-run on every PR that touches files adjacent to the affected component |
+| Dependency tree change (new transitive dependency) | Low–Medium | Re-run SBOM generation; compare dependency tree against prior VEX assertions |
+| Base image update | Medium for `component_not_present` assertions | Re-validate component presence after image rebuild |
+| New CVE assigned to same component (different issue) | Low but confusing | Require separate VEX per CVE identifier — do not extend existing assertions |
+
+**Automated staleness detection pipeline:**
+
+```yaml
+# GitHub Actions — VEX staleness check on every PR
+name: VEX Staleness Review
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  vex-staleness-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect dependency changes
+        id: dep-changes
+        run: |
+          # Check if any dependency manifest changed in this PR
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD \
+            | grep -E 'package\.json|go\.mod|requirements\.txt|pom\.xml|Gemfile|Cargo\.toml|go\.sum' \
+            || true)
+          echo "changed_deps=${CHANGED}" >> $GITHUB_OUTPUT
+          if [ -n "$CHANGED" ]; then
+            echo "dependency_files_changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Flag VEX assertions for review if deps changed
+        if: steps.dep-changes.outputs.dependency_files_changed == 'true'
+        run: |
+          # List all active VEX assertions that reference changed dependency scope
+          echo "Dependency changes detected in this PR. The following VEX assertions may require re-review:"
+          echo ""
+          # Parse VEX registry for assertions with 'not_affected' or 'under_investigation' status
+          jq -r '.assertions[] | select(.status == "not_affected" or .status == "under_investigation") |
+            "  CVE: \(.cve_id) | Component: \(.component) | Justification: \(.justification) | Owner: \(.owner) | Expires: \(.expiry_date)"' \
+            ./vex-registry/vex-inventory.json || echo "  No active VEX registry found — run initial VEX inventory."
+
+          echo ""
+          echo "ACTION REQUIRED: Review the above assertions and confirm they remain valid."
+          echo "Update expiry dates in vex-registry/vex-inventory.json if assertions remain correct."
+          echo "Create new VEX documents for any assertions that require re-evaluation."
+```
+
+**VEX expiration enforcement:**
+
+```python
+#!/usr/bin/env python3
+# vex-expiry-check.py — Run daily in CI to flag expired VEX assertions
+import json
+import sys
+from datetime import datetime, date
+
+VEX_REGISTRY = "vex-registry/vex-inventory.json"
+TODAY = date.today()
+WARN_DAYS = 14  # Warn when within 14 days of expiry
+
+with open(VEX_REGISTRY) as f:
+    registry = json.load(f)
+
+expired = []
+expiring_soon = []
+
+for assertion in registry.get("assertions", []):
+    expiry = date.fromisoformat(assertion["expiry_date"])
+    days_remaining = (expiry - TODAY).days
+
+    if days_remaining < 0:
+        expired.append((assertion, days_remaining))
+    elif days_remaining <= WARN_DAYS:
+        expiring_soon.append((assertion, days_remaining))
+
+if expired:
+    print(f"ERROR: {len(expired)} EXPIRED VEX assertion(s) — these must be re-reviewed immediately:")
+    for a, d in expired:
+        print(f"  {a['cve_id']} / {a['component']} — expired {abs(d)} days ago — owner: {a['owner']}")
+
+if expiring_soon:
+    print(f"WARNING: {len(expiring_soon)} VEX assertion(s) expiring within {WARN_DAYS} days:")
+    for a, d in expiring_soon:
+        print(f"  {a['cve_id']} / {a['component']} — expires in {d} days — owner: {a['owner']}")
+
+if expired:
+    sys.exit(1)  # Fail CI if expired assertions are present
+```
+
+**VEX inventory schema** (store as `vex-registry/vex-inventory.json`):
+
+```json
+{
+  "last_updated": "2024-03-15",
+  "assertions": [
+    {
+      "cve_id": "CVE-2021-44228",
+      "component": "org.apache.logging.log4j:log4j-core",
+      "component_version": "2.14.1",
+      "affected_service": "payment-service",
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "evidence_reference": "docs/vex-evidence/CVE-2021-44228-payment-service.md",
+      "approved_by": "security-engineer@example.com",
+      "approval_date": "2024-03-15",
+      "expiry_date": "2024-06-15",
+      "review_trigger": "any upgrade of log4j-core",
+      "owner": "platform-security@example.com"
+    }
+  ]
+}
+```
+
+---
+
+### Handling Zero-Day and Unknown CVEs
+
+Not all vulnerability findings arrive via an assigned CVE identifier. Supply chain security programs must handle three categories of unassigned or ambiguous vulnerability signals:
+
+**Category 1: CVE reserved but not yet populated (NVD lag)**
+
+The NVD regularly delays publication of CVE details by days to weeks after initial disclosure. During this window, scanners may report a CVE ID with no CVSS score, no description, and no affected version ranges.
+
+| Handling | Procedure |
+|----------|-----------|
+| **Do not suppress** | A CVE with no NVD details cannot be VEX-assessed. Hold as `under_investigation`. |
+| **Set SLA timer** | For Critical/High severity vendors (e.g., directly disclosed by a major vendor), apply a 7-day investigation SLA regardless of NVD publication status. |
+| **Monitor the CVE** | Subscribe to NVD enrichment updates for specific CVE IDs using the NVD API notification stream or a vulnerability intelligence service. |
+| **VEX when data is available** | As soon as NVD or vendor advisory provides sufficient detail, complete the VEX assessment. |
+
+**Category 2: Zero-day with no CVE assigned**
+
+When an active exploit or vendor advisory describes a vulnerability in a component your software uses, but no CVE has been assigned:
+
+```
+Zero-Day Handling Procedure:
+1. Immediately assess the affected component version against the advisory's description.
+2. If the advisory indicates affected versions include your version:
+   - Treat as Severity = Critical regardless of unassigned CVSS.
+   - Apply a 24-hour remediation SLA.
+3. Create an internal tracking ID (e.g., INT-VULN-2024-001) in your VEX registry.
+4. Document the advisory source URL, disclosure date, and evidence of impact assessment.
+5. When CVE is assigned, update VEX registry to link internal ID to the CVE.
+6. Do not remove the internal ID entry — it preserves the audit trail of when you
+   first learned of the vulnerability.
+```
+
+**Category 3: Transitive dependency with no upgrade path**
+
+When a CVE affects a transitive dependency, but upgrading it would break a direct dependency that has not yet released a compatible version:
+
+```
+Blocked Upgrade Procedure:
+1. Assess whether the CVE is exploitable in your context (VEX assessment).
+   - If not exploitable → issue VEX "not_affected" with justification "vulnerable_code_not_in_execute_path"
+   - If exploitable → continue to step 2.
+
+2. Document the dependency conflict:
+   service X requires library A >= 2.0 which requires library B = 1.4 (vulnerable)
+   library B >= 1.5 (fixed) is incompatible with library A 2.0
+   library A 3.0 (supports B >= 1.5) not yet released
+
+3. Escalation options (in priority order):
+   a. Vendor patch: contact the maintainer of library A and report the conflict.
+   b. Fork patch: if library A is open source and non-complex, apply minimal fix
+      and use a forked version until upstream releases.
+   c. Runtime mitigation: deploy compensating controls (WAF rules, input validation)
+      to reduce exploitability. Document as VEX "inline_mitigations_already_exist"
+      with security review sign-off.
+   d. Risk acceptance: formal risk acceptance from CISO with documented timeline
+      for resolution when library A 3.0 is released.
+
+4. Set a calendar reminder for 30 days to re-evaluate — do not set-and-forget.
+```
+
+---
+
+### VEX Conflict Resolution
+
+When two teams disagree on whether a CVE affects a shared component, a resolution procedure prevents the disagreement from blocking deployments indefinitely.
+
+**Conflict scenarios:**
+
+| Conflict Type | Resolution Owner | Resolution Procedure |
+|---------------|-----------------|---------------------|
+| Team A claims `not_affected`; Team B's threat model shows exploitation path | Application Security | Security engineer performs independent code review; findings are binding |
+| Two services share a component; one is affected, one is not | Per-service VEX | Issue separate VEX documents per service — VEX is always scoped to a specific product/version |
+| Scanner vendor disagrees with internal assessment | Internal assessment governs | Document vendor discrepancy; your VEX assertion is authoritative for your context |
+| Previous `not_affected` assertion disputed after code change | Security engineer re-review | Treat as a new assessment; prior assertion is superseded, not amended |
+
+**Escalation path for unresolved conflicts:**
+
+```
+Developer team disputes VEX assessment
+  └─► Application Security review (3 business days SLA)
+        └─► If unresolved: Security Architecture review (5 business days SLA)
+              └─► If unresolved: CISO risk decision (binding; documented in exception log)
+```
+
+While a conflict is unresolved, the vulnerability is treated as **affected** — the pipeline gate remains active. Teams cannot self-approve a `not_affected` assertion for CVEs that are under dispute.
+
+---
+
 ### VEX in Dependency-Track
 
 Dependency-Track (DT) has native CycloneDX VEX support. To configure:
@@ -459,6 +676,161 @@ print(f"SBOM quality check PASSED: {len(components)} components, {len(dependenci
 - Use S3 Object Lock with `COMPLIANCE` mode to prevent deletion during the retention period.
 - Automate the application of retention policies in the SBOM archival pipeline step.
 - Ensure the archival bucket is in a separate AWS account from the application account (to prevent credential compromise from deleting compliance evidence).
+
+---
+
+### SBOM Edge Cases
+
+Standard SBOM generation workflows cover the common case: a build system produces an artifact, Syft or Trivy generates an SBOM, and the result is stored alongside the image. Several edge cases require explicit handling to avoid incomplete or misleading SBOMs.
+
+#### Edge Case 1: Dynamically Downloaded Dependencies at Runtime
+
+Some applications download plugins, models, or code at runtime rather than at build time. These components are not captured in a build-time SBOM.
+
+**Examples:** ML models pulled from a model hub at startup; plugin systems that fetch extensions on first use; applications that `pip install` or `gem install` from a requirements file at container launch.
+
+**Risk:** A runtime-fetched dependency with a known CVE will not appear in the SBOM. Vulnerability scanners will not detect it. Compliance evidence for component inventory is incomplete.
+
+**Handling approach:**
+
+| Option | When to Use | Implementation |
+|--------|-------------|---------------|
+| **Prohibit runtime dependency fetching** | Best option for production workloads | Enforce via OPA/Kyverno admission policy: block containers with `command` or `args` that invoke package managers |
+| **Generate supplemental SBOM at startup** | When runtime fetching is unavoidable | Run `syft` or `pip-audit` as an init container; upload supplemental SBOM to Dependency-Track via API before the main container starts |
+| **Pin all runtime-fetched components** | For ML model scenarios | Pin model identifiers to immutable hashes; add model hashes to a machine-readable `model-registry.json` that is processed as an SBOM supplement |
+
+**Detection:** Audit containers for runtime dependency fetching by scanning the image entrypoint and CMD for `pip`, `gem`, `npm`, `curl | sh`, or `wget` invocations using `syft` or a custom OPA policy at admission.
+
+---
+
+#### Edge Case 2: Multi-Stage Build Artifacts with Layer Squashing
+
+Multi-stage Docker builds are designed to produce a minimal final image, but SBOM tools may capture components from build stages that do not appear in the final artifact, or miss components that are copied without their metadata.
+
+**Problem scenarios:**
+- `COPY --from=builder /app/node_modules/` copies compiled binaries without preserving `package.json` — Syft cannot reconstruct the dependency tree from compiled artifacts alone
+- A distroless base image provides no package manager database — Syft falls back to heuristic detection which may miss components
+
+**Handling approach:**
+
+```dockerfile
+# Build stage — generate SBOM during build while full package metadata is available
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+
+# Generate SBOM from the build context before squashing
+RUN npm list --json > /tmp/npm-tree.json
+
+FROM node:20-alpine AS sbom-generator
+COPY --from=builder /tmp/npm-tree.json /tmp/npm-tree.json
+RUN apk add --no-cache curl && \
+    curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin && \
+    syft /tmp/npm-tree.json -o cyclonedx-json=/tmp/sbom.cdx.json
+
+FROM gcr.io/distroless/nodejs20-debian12 AS runtime
+COPY --from=builder /app/dist/ /app/
+# SBOM is produced in the sbom-generator stage and extracted in CI — not included in runtime image
+```
+
+```yaml
+# GitHub Actions — extract SBOM from build stage before final image is published
+- name: Extract SBOM from build stage
+  run: |
+    docker build --target sbom-generator -t sbom-stage .
+    docker create --name sbom-extractor sbom-stage
+    docker cp sbom-extractor:/tmp/sbom.cdx.json ./sbom.cdx.json
+    docker rm sbom-extractor
+    echo "SBOM extracted from build stage — will be attached to final image digest"
+```
+
+---
+
+#### Edge Case 3: SBOMs for Monorepos with Multiple Artifacts
+
+A monorepo may produce 10–50 deployable artifacts from a single repository. Generating one SBOM for the repository root will include components from all services, making each per-artifact SBOM inaccurate and inflating vulnerability counts.
+
+**Required approach:** Generate a separate, scoped SBOM per deployable artifact — not per repository.
+
+```yaml
+# GitHub Actions — matrix strategy for per-artifact SBOM generation
+jobs:
+  generate-sboms:
+    strategy:
+      matrix:
+        service:
+          - name: payment-service
+            path: services/payment
+          - name: auth-service
+            path: services/auth
+          - name: notification-service
+            path: services/notification
+    steps:
+      - name: Build ${{ matrix.service.name }} image
+        run: |
+          docker build -t ${{ matrix.service.name }}:${{ github.sha }} \
+            ${{ matrix.service.path }}
+
+      - name: Generate SBOM for ${{ matrix.service.name }}
+        run: |
+          syft scan ${{ matrix.service.name }}:${{ github.sha }} \
+            -o cyclonedx-json=sbom-${{ matrix.service.name }}.cdx.json
+
+      - name: Attach SBOM to image
+        run: |
+          IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
+            ${{ matrix.service.name }}:${{ github.sha }})
+          cosign attest \
+            --predicate sbom-${{ matrix.service.name }}.cdx.json \
+            --type cyclonedx \
+            "$IMAGE_DIGEST"
+```
+
+**Dependency-Track organization for monorepos:** Create one Dependency-Track *project* per service, not per repository. Use the repository name as the parent tag and service name as the project name. This allows per-service vulnerability queries and per-service VEX management.
+
+---
+
+#### Edge Case 4: SBOMs for Infrastructure (Terraform, Helm, CloudFormation)
+
+Infrastructure-as-Code artifacts have software dependencies (provider versions, module versions, Helm chart dependencies) that are rarely included in SBOM programs but represent a real supply chain risk.
+
+**IaC SBOM generation:**
+
+```bash
+# Generate SBOM for Terraform module dependencies
+# cdxgen supports HCL/Terraform natively
+cdxgen -t terraform ./infrastructure/ -o terraform-sbom.cdx.json
+
+# Generate SBOM for Helm chart dependencies
+# Syft supports OCI artifacts including Helm charts
+syft oci-archive:$(helm package my-chart --dependency-update | grep -oP '(?<=to: ).+') \
+  -o cyclonedx-json=helm-sbom.cdx.json
+
+# Attach Terraform SBOM to the Terraform state version identifier
+# Store with the commit SHA that modified the infrastructure
+aws s3 cp terraform-sbom.cdx.json \
+  s3://compliance-evidence/iac-sboms/${COMMIT_SHA}/terraform-sbom.cdx.json
+```
+
+**What IaC SBOMs capture that standard SBOMs miss:**
+- Terraform provider versions (hashicorp/aws, hashicorp/kubernetes) — these are software with CVEs
+- Helm chart versions and their Docker image dependencies
+- CloudFormation transform versions
+- Ansible role and collection versions
+
+---
+
+#### Edge Case 5: SBOMs for Database Migrations and Schema Artifacts
+
+Database migrations are deployed artifacts that are rarely included in SBOM programs. A migration script that embeds a vulnerable serialization library (e.g., a Python Alembic migration that imports a vulnerable dependency) is a real supply chain risk.
+
+**Handling approach:**
+- Treat migration bundles as first-class artifacts alongside application images
+- Generate SBOMs for migration runner containers (which contain the Python/Ruby/Go dependencies needed to execute migrations)
+- Pin migration runner base images to signed, scanned images — do not use `python:latest` as the migration runner
+
+See `release-orchestration-framework/docs/database-migration-safety.md` for the full migration safety framework, including how migration artifacts fit into the signed artifact promotion pipeline.
 
 ---
 

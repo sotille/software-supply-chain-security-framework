@@ -73,6 +73,7 @@ This framework covers the full software supply chain lifecycle:
 | [Implementation](docs/implementation.md) | Phased implementation, SBOM tooling (Syft, Trivy, cdxgen), Sigstore/Cosign deployment, SLSA progression, private registry setup |
 | [Open Source Component Assessment](docs/open-source-component-assessment.md) | Structured framework for assessing OSS dependency health, security posture, supply chain integrity, and license risk before introduction and during continuous monitoring |
 | [Incident Response Playbook](docs/incident-response-playbook.md) | Four detailed IR playbooks for: compromised OSS dependency, build system compromise, artifact tampering, pipeline credential compromise |
+| [License Compliance Integration](docs/license-compliance-integration.md) | License risk classification (Tier 1–4), automated license scanning in CI/CD, SBOM-driven license auditing, attribution generation, and exception management |
 | [Best Practices](docs/best-practices.md) | 30+ best practices by supply chain layer: source, dependencies, build, artifacts, distribution, deployment |
 | [Roadmap](docs/roadmap.md) | 12-month security roadmap, quick wins, SLSA maturity progression, regulatory compliance milestones, KPIs |
 
@@ -124,6 +125,17 @@ Organizations at different stages of supply chain security maturity will use thi
 
 - [Executive Order 14028](https://www.federalregister.gov/documents/2021/05/17/2021-10460/improving-the-nations-cybersecurity) — Improving the Nation's Cybersecurity
 - [EU Cyber Resilience Act](https://digital-strategy.ec.europa.eu/en/policies/cyber-resilience-act) — EU cybersecurity requirements for digital products
+
+---
+
+## Learning Resources
+
+The Techstream Book Series and hands-on lab companion extend the concepts in this framework with structured learning, exercises, and guided implementation walkthroughs.
+
+- **[Book 2: Securing CI/CD & the Software Supply Chain](https://www.techstream.app/learn)** — The primary book volume aligned with this framework. Covers SLSA level advancement, SBOM generation and lifecycle, VEX workflows, Sigstore/Cosign signing, and hermetic builds.
+- **[Hands-On Labs (techstream-learn/book-2-cicd-supply-chain/)](https://www.techstream.app/learn)** — Practical exercises including SBOM generation with CycloneDX, Cosign artifact signing, and SLSA provenance attestation.
+- **[Book Series Overview (VOLUMES.md)](../techstream-books/VOLUMES.md)** — Index of all four Techstream volumes covering DevSecOps foundations, CI/CD security, cloud security, and release governance.
+- **[Techstream Platform](https://www.techstream.app)** — The central portal for all Techstream frameworks, documentation, and learning resources.
 
 ---
 

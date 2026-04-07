@@ -888,3 +888,122 @@ AI/ML model supply chain controls complement — and in some cases extend — th
 The goal is a unified supply chain assurance posture: the same integrity guarantees that apply to code packages apply to the models those packages serve.
 
 **Maturity:** Standard
+
+---
+
+### ML-7: Inference-Time Security and Input Validation
+
+**Control:** AI/ML inference endpoints must implement input validation and output filtering controls to prevent prompt injection, adversarial input exploitation, and sensitive data exfiltration through model responses.
+
+**Rationale:** Supply chain integrity guarantees (model provenance, signing, SBOM) ensure that a trustworthy model is deployed — but they do not protect against attacks that exploit the model's behavior at inference time. An authenticated, integrity-verified LLM endpoint is still vulnerable to prompt injection if its inputs are not validated. Inference-time security is the runtime complement to supply chain security.
+
+**Control areas:**
+
+| Threat | Inference-Time Control |
+|---|---|
+| Prompt injection (direct) | Input validation schema; system prompt isolation; refusal classifiers |
+| Prompt injection (indirect) | Treat all user-provided content as untrusted even if retrieved from internal sources; validate RAG retrieval results before including in context |
+| Sensitive data exfiltration via output | Output filtering for PII, credentials, and proprietary data patterns before returning model responses to external clients |
+| Denial-of-service via adversarial inputs | Input length limits; token budget enforcement; rate limiting on the inference endpoint |
+| Model inversion (training data extraction) | Limit model verbatim output; apply differential privacy where model training data is sensitive |
+| Tool/function call abuse (agentic models) | Apply explicit tool allowlists and deny-by-default permission models for models with function-calling capabilities; log all tool invocations |
+
+**Implementation — input/output guardrails for LLM endpoints:**
+
+```python
+from guardrails import Guard
+from guardrails.hub import RestrictToTopic, DetectPII, ValidLength
+
+# Define input guards
+input_guard = Guard().use_many(
+    ValidLength(min=1, max=4096, on_fail="exception"),
+    RestrictToTopic(
+        valid_topics=["product_support", "documentation"],
+        on_fail="exception"
+    )
+)
+
+# Define output guards
+output_guard = Guard().use_many(
+    DetectPII(
+        pii_entities=["EMAIL_ADDRESS", "CREDIT_CARD", "SSN"],
+        on_fail="fix"  # Redact detected PII from output
+    )
+)
+
+def handle_inference_request(user_input: str) -> str:
+    # Validate input
+    validated_input = input_guard.validate(user_input)
+
+    # Run inference
+    raw_output = model.generate(validated_input)
+
+    # Filter output
+    safe_output = output_guard.validate(raw_output)
+
+    return safe_output
+```
+
+**Agentic model tool access manifest (restrict tool access at the framework layer, not prompt layer):**
+
+```yaml
+# agent-permissions.yaml
+# Explicitly declare which tools are available to each agent role.
+# Tools not listed are inaccessible regardless of what the agent's prompts request.
+agents:
+  - role: code-review-agent
+    allowed_tools:
+      - read_repository
+      - comment_on_pr
+      - query_sast_results
+    denied_tools:
+      - merge_pull_request
+      - deploy_to_production
+      - modify_pipeline_configuration
+      - read_secrets
+
+  - role: release-notes-agent
+    allowed_tools:
+      - read_git_history
+      - read_commit_messages
+      - write_release_notes_draft
+    denied_tools:
+      - merge_pull_request
+      - deploy_to_production
+      - access_secrets
+```
+
+**Maturity:** Standard | **Applies to:** Organizations deploying LLM-powered applications or agentic pipeline tools
+
+---
+
+## Controls Framework Summary
+
+This framework defines supply chain security controls across 13 domains:
+
+| Domain | Controls | Maturity Range |
+|--------|----------|----------------|
+| Dependency Security (DEP) | DEP-1 through DEP-6 | Foundational → Standard |
+| SBOM Generation and Management (SBOM) | SBOM-1 through SBOM-4 | Standard → Advanced |
+| Artifact Signing and Verification (SIGN) | SIGN-1 through SIGN-4 | Standard |
+| Secure Build Systems (BUILD) | BUILD-1 through BUILD-5 | Standard → Advanced |
+| Provenance and Traceability (PROV) | PROV-1 through PROV-2 | Standard |
+| SLSA Compliance Controls | Compliance matrix | Foundational → Advanced |
+| Third-Party Risk Management (TPR) | TPR-1 through TPR-2 | Standard |
+| Open Source Risk Management (OSS) | OSS-1 through OSS-3 | Standard → Advanced |
+| Container Image Security (IMG) | IMG-1 through IMG-4 | Foundational → Standard |
+| Registry Security (REG) | REG-1 through REG-4 | Foundational → Standard |
+| Deployment Integrity Verification (DEPLOY) | DEPLOY-1 through DEPLOY-3 | Standard → Advanced |
+| Policy Enforcement (POL) | POL-1 through POL-2 | Standard |
+| AI/ML Model Supply Chain (ML) | ML-1 through ML-7 | Standard → Advanced |
+
+**Implementation Sequencing**
+
+For organizations starting from a baseline state:
+
+1. **Foundational (Month 1–2):** DEP-1, DEP-2, DEP-5, SBOM-1, SIGN-1, BUILD-1, REG-1, REG-2, IMG-3, DEPLOY-1
+2. **Standard (Month 3–6):** DEP-3, DEP-4, DEP-6, SBOM-2, SBOM-3, SIGN-2, SIGN-3, SIGN-4, BUILD-2, BUILD-3, PROV-1, PROV-2, TPR-1, OSS-1, OSS-2, IMG-1, IMG-2, REG-3, REG-4, DEPLOY-3, POL-1, POL-2
+3. **Advanced (Month 6–12):** SBOM-4, BUILD-4, BUILD-5, TPR-2, OSS-3, DEPLOY-2
+4. **AI/ML Supplement (when applicable):** ML-1 through ML-7
+
+See the companion [SLSA Level Advancement Guide](slsa-level-advancement.md) for SLSA-specific sequencing.

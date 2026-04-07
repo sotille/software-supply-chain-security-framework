@@ -282,6 +282,122 @@ Lessons learned:
 
 ---
 
+## Playbook 5: AI/ML Model Supply Chain Incident
+
+**Trigger:** Evidence of a compromised, poisoned, or substituted AI/ML model in the software supply chain — including unexpected model behavior, mismatched model hash verification, unauthorized model registry access, or a public disclosure of a backdoored model used by the organization.
+
+This playbook covers threats specific to AI/ML model supply chains: model weight poisoning, training data contamination, malicious fine-tuning, model hub hijacking, and inference-time model substitution. These threats share structural similarity with traditional software supply chain attacks but require distinct response procedures due to the opaque nature of model weights and the difficulty of behavioral analysis.
+
+### Threat Categories Covered
+
+| Threat | Description |
+|--------|-------------|
+| **Model weight poisoning** | Pre-trained model contains backdoored behavior triggered by specific input patterns |
+| **Training data poisoning** | Model fine-tuned on malicious data that subtly skews output toward adversarial outcomes |
+| **Model hub hijacking** | Attacker gains write access to the organization's model hub namespace and replaces a model |
+| **Malicious fine-tune distribution** | Community-shared fine-tune contains hidden behavior not present in the base model |
+| **Inference-time substitution** | Attacker substitutes a different model weight file for the expected one at serving time |
+
+### Phase 1 — Detection and Triage (0–1 hour)
+
+1. **Identify the scope:** Determine which models, versions, and production services are potentially affected. Query your model registry and model SBOM inventory:
+   ```bash
+   # Query model registry for affected model versions
+   # Replace with your registry's query interface
+   mlflow models list --name <model-name> --filter "tags.source = 'external'"
+   ```
+
+2. **Verify model hashes against recorded manifests:** Compare the hash of the model weights file in production against the hash recorded in your Model Bill of Materials (ML-SBOM) or model card:
+   ```python
+   import hashlib
+
+   def check_model_integrity(model_path: str, expected_hash: str) -> bool:
+       sha256 = hashlib.sha256()
+       with open(model_path, "rb") as f:
+           for chunk in iter(lambda: f.read(65536), b""):
+               sha256.update(chunk)
+       actual = f"sha256:{sha256.hexdigest()}"
+       if actual != expected_hash:
+           print(f"INTEGRITY FAILURE: {model_path}")
+           print(f"  Expected: {expected_hash}")
+           print(f"  Actual:   {actual}")
+           return False
+       return True
+   ```
+
+3. **Classify severity:**
+   - **P1 — Critical:** Model confirmed compromised and actively serving production traffic; model outputs data to customers
+   - **P2 — High:** Model hash mismatch confirmed; model in staging; or model's role is internal/non-customer-facing
+   - **P3 — Medium:** Suspicious model source (untrusted origin, no provenance attestation) but no confirmed compromise
+
+4. Notify platform security, the application team, and the CISO function. For P1, engage legal if customer data may have been influenced by manipulated model outputs.
+
+### Phase 2 — Containment (1–2 hours)
+
+1. **Halt inference serving** from the affected model version:
+   - Set the model registry stage to `Archived` or `Deprecated` to prevent new deployments.
+   - Roll back the serving endpoint to the previous model version if a known-good version is available.
+   - If no known-good version exists, consider taking the inference service offline until a clean model can be sourced.
+
+2. **Block model download in CI/CD:** Add the affected model identifier to the pipeline's blocked dependency list. Prevent any new build from fetching this model version.
+
+3. **Isolate the affected service** if the model is serving production traffic and P1 criteria apply:
+   - Apply network policy to limit the service's outbound connections (prevent potential data exfiltration via inference manipulation).
+   - Enable enhanced logging on the service to capture all inference requests for forensic review.
+
+4. **Preserve the compromised model file** for forensic analysis before any cleanup. Do not delete — retain in a quarantined storage location with access restricted to the incident response team.
+
+### Phase 3 — Forensic Analysis (parallel with containment)
+
+1. **Behavioral analysis:** If resources permit, run the suspect model in an isolated environment with a battery of adversarial inputs designed to trigger known backdoor patterns (BadNets trigger patterns, trojaned classifier inputs, instruction-following override attempts for LLMs).
+
+2. **Provenance investigation:** Trace the model's origin:
+   - What is the model hub source (Hugging Face, Ollama, internal)?
+   - When was it downloaded? By whom?
+   - Was the download hash-verified against a recorded expected hash?
+   - Has the model hub namespace been accessed by unauthorized parties?
+
+3. **Training data audit (if fine-tuned internally):**
+   - Review the training dataset for known poisoning patterns (label flips, adversarial examples, instruction override text in fine-tuning data).
+   - If the fine-tuning dataset was sourced from external contributions, treat all contributed samples as potentially poisoned.
+
+4. **Inference log review:** Analyze production inference logs for anomalous patterns: unexpected output distributions, systematic classification errors in specific input categories, outputs with embedded exfiltration patterns (URLs, encoded data in responses).
+
+### Phase 4 — Eradication
+
+1. **Source a clean model:**
+   - For publicly available base models: re-download from the official source and verify against the model card's published hash.
+   - For internally fine-tuned models: rebuild from a clean base model and a verified training dataset. Do not reuse any data that was not fully provenance-traced.
+   - For internally trained models: retrain from verified data if dataset compromise is suspected.
+
+2. **Verify the replacement model's integrity and provenance:**
+   - Confirm hash matches model card or release notes
+   - Confirm model source repository commit SHA matches expected training run record
+   - Generate a new Model SBOM (ML-SBOM) per [ML-2 controls](framework.md#ml-2-model-sbom-model-bill-of-materials)
+
+3. **Store in private model registry:** Register the clean model in your organization's private model registry (not fetched from a public hub at inference time). Apply access controls per [ML-3](framework.md#ml-3-private-model-registry).
+
+4. **Sign the model artifact:** Package the model weights as an OCI artifact and sign with Cosign for deployment-time verification where applicable.
+
+### Phase 5 — Recovery and Validation
+
+1. Deploy the clean model through the full staging validation pipeline — do not bypass evaluation gates.
+2. Run a post-deployment behavioral validation suite confirming the restored model behaves within expected output distributions.
+3. Monitor production inference for at least 24 hours post-restoration for anomalous output patterns.
+4. Notify downstream consumers (API clients, internal teams) of the incident and restoration timeline.
+
+### Phase 6 — Post-Incident Review
+
+1. Document: affected model versions, inference traffic volume during compromise window, nature of any anomalous outputs observed.
+2. Assess whether any customer-visible outputs were materially affected by the compromised model. Engage legal if regulatory notification may be required.
+3. Implement missing controls from the [AI/ML Supply Chain Security section](framework.md#aiml-model-supply-chain-security) of the framework:
+   - Was ML-1 (model provenance verification) in place? If not, add to roadmap as Critical.
+   - Was ML-2 (model SBOM) in place? If not, add to roadmap as High.
+   - Was ML-3 (private model registry) in place? If not, add to roadmap as High.
+4. Update the SBOM and model provenance records to reflect all models currently serving production traffic.
+
+---
+
 ## Integration with Framework Documentation
 
 - **Prevention controls:** [Software Supply Chain Security Framework](framework.md) — Section 3: Control Implementation
