@@ -67,7 +67,12 @@ This framework covers the full software supply chain lifecycle:
 | [Introduction](docs/introduction.md) | Supply chain threat landscape, attack categories, regulatory environment, key terminology |
 | [Architecture](docs/architecture.md) | Supply chain security reference architecture, SLSA levels, SBOM architecture, Sigstore/Cosign integration, trust chain design |
 | [Framework](docs/framework.md) | Full controls library — dependency security, SBOM, artifact signing, build security, SLSA compliance, registry security, policy enforcement |
+| [SBOM Guide](docs/sbom-guide.md) | CycloneDX vs SPDX format comparison, tool selection matrix (Syft, Trivy, cdxgen), CI/CD integration patterns, NTIA minimum elements |
+| [SBOM at Scale](docs/sbom-at-scale.md) | Enterprise SBOM storage architecture, lifecycle management, querying and analytics, Dependency-Track capacity planning, regulatory reporting |
+| [VEX and SBOM Lifecycle](docs/vex-and-sbom-lifecycle.md) | VEX workflow for vulnerability exploitability analysis; SBOM versioning, storage architecture, patch cycle integration, retention policy |
 | [Implementation](docs/implementation.md) | Phased implementation, SBOM tooling (Syft, Trivy, cdxgen), Sigstore/Cosign deployment, SLSA progression, private registry setup |
+| [Open Source Component Assessment](docs/open-source-component-assessment.md) | Structured framework for assessing OSS dependency health, security posture, supply chain integrity, and license risk before introduction and during continuous monitoring |
+| [Incident Response Playbook](docs/incident-response-playbook.md) | Four detailed IR playbooks for: compromised OSS dependency, build system compromise, artifact tampering, pipeline credential compromise |
 | [Best Practices](docs/best-practices.md) | 30+ best practices by supply chain layer: source, dependencies, build, artifacts, distribution, deployment |
 | [Roadmap](docs/roadmap.md) | 12-month security roadmap, quick wins, SLSA maturity progression, regulatory compliance milestones, KPIs |
 

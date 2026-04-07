@@ -419,14 +419,17 @@ jobs:
 
 ## Open Source Risk Management
 
+> For a complete structured assessment framework including risk tiers, scoring worksheets, continuous monitoring SLAs, and exception management — see the [Open Source Component Assessment Guide](open-source-component-assessment.md).
+
 ### OSS-1: Open Source Component Approval
 
-**Control:** New open source dependencies must be evaluated before introduction. Evaluation criteria include:
+**Control:** New open source dependencies must be evaluated before introduction using the six-dimension assessment framework (maintainer health, security posture, supply chain integrity, license, community, functionality scope). See [Open Source Component Assessment](open-source-component-assessment.md) for the full scoring model and risk tier classification.
 
-- **Security posture:** OpenSSF Scorecard score (minimum 6/10 for production use), recent vulnerability history, responsive maintainership
-- **License compatibility:** License must be compatible with the organization's software distribution model
-- **Maintenance health:** Active maintenance, recent commits, multiple maintainers, defined governance
-- **Dependency footprint:** Transitive dependency count and quality
+Minimum gate criteria for new dependencies:
+- **Security posture:** OpenSSF Scorecard score ≥ 6/10 for Tier 1 approval; < 4/10 triggers security engineer review
+- **License compatibility:** Auto-approved licenses (MIT, Apache 2.0, BSD) proceed without review; GPL/AGPL require architecture review
+- **Maintenance health:** Bus factor = 1 (single maintainer) escalates to Restricted tier regardless of other scores
+- **Supply chain integrity:** Binary blobs in source tree trigger automatic escalation
 
 **Tooling:** OpenSSF Scorecard, Socket.dev, Phylum, Snyk Open Source.
 
@@ -633,5 +636,255 @@ spec:
 ### POL-2: Policy-as-Code Versioning
 
 **Control:** All admission control policies must be stored in version control and deployed through the same review and approval process as application code. Policy changes must not be applied directly to clusters outside of the approved GitOps pipeline.
+
+**Maturity:** Standard
+
+---
+
+## AI/ML Model Supply Chain Security
+
+As AI and machine learning models become software dependencies — fetched from model hubs, embedded in application containers, or served as API backends — they introduce a new class of supply chain risk. This section defines controls for the model supply chain: how models are sourced, verified, stored, and served.
+
+### ML-1: Model Provenance and Source Verification
+
+**Control:** AI/ML models used in production must have verifiable provenance: a documented source (training organization, model hub, internal training run), version/commit reference, and ideally a cryptographic attestation or hash binding the model weights to their source.
+
+**Rationale:** Pre-trained models downloaded from public hubs (Hugging Face, TensorFlow Hub, Ollama registry) are analogous to open source packages — they can be backdoored, tampered with in transit, or substituted with malicious versions. Unlike code packages, model weights are opaque; a backdoored model cannot be detected by reading the weights.
+
+**Implementation:**
+
+```python
+# Verify model hash before loading (SHA-256 of model weights file)
+import hashlib
+
+EXPECTED_HASH = "sha256:a3b4c5d6e7f8..."  # Record from model card or release notes
+
+def verify_model_integrity(model_path: str, expected_hash: str) -> bool:
+    sha256 = hashlib.sha256()
+    with open(model_path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            sha256.update(chunk)
+    actual_hash = f"sha256:{sha256.hexdigest()}"
+    if actual_hash != expected_hash:
+        raise ValueError(
+            f"Model integrity check FAILED.\n"
+            f"Expected: {expected_hash}\n"
+            f"Actual:   {actual_hash}\n"
+            "Model may be corrupted or tampered. Do not proceed."
+        )
+    return True
+```
+
+For models downloaded from Hugging Face, pin to a specific commit SHA of the model repository rather than a mutable version tag:
+
+```python
+from transformers import AutoModelForSequenceClassification
+
+# Bad: mutable reference (model may change)
+model = AutoModelForSequenceClassification.from_pretrained("bert-base-uncased")
+
+# Good: pinned to a specific commit SHA
+model = AutoModelForSequenceClassification.from_pretrained(
+    "bert-base-uncased",
+    revision="86b5e0934494bd15c9632b12f734a8a67f723594"  # Immutable commit reference
+)
+```
+
+**Maturity:** Standard | **SLSA relevance:** Level 3 (declared materials, verified inputs)
+
+---
+
+### ML-2: Model SBOM (Model Bill of Materials)
+
+**Control:** Each AI/ML model used in production must have a documented model bill of materials capturing: base model identifier and version, fine-tuning dataset references, training framework and version, evaluation results, known limitations, and intended use scope.
+
+**Rationale:** A model SBOM provides the same visibility into the model dependency graph that a code SBOM provides for software packages — enabling vulnerability correlation, regulatory disclosure, and incident response. Emerging standards (CycloneDX 1.5+ supports ML model components as first-class entities).
+
+**Implementation using CycloneDX for ML models:**
+
+```json
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "components": [
+    {
+      "type": "machine-learning-model",
+      "name": "payments-fraud-classifier",
+      "version": "2.1.0",
+      "description": "Binary classifier for payment fraud detection",
+      "modelCard": {
+        "modelParameters": {
+          "approach": {
+            "type": "supervised-classification"
+          },
+          "task": {
+            "type": "binary-classification"
+          },
+          "architectureFamily": "transformer",
+          "modelArchitecture": "bert-base-uncased"
+        },
+        "quantitativeAnalysis": {
+          "performanceMetrics": [
+            {
+              "type": "AUC-ROC",
+              "value": "0.943",
+              "slice": "hold-out test set, Q3 2025"
+            }
+          ]
+        },
+        "considerations": {
+          "limitations": ["Performance degrades for transactions in emerging markets"],
+          "ethicalConsiderations": ["Bias evaluation: see model-card.md#fairness"]
+        }
+      },
+      "purl": "pkg:huggingface/org/payments-fraud-classifier@2.1.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a3b4c5d6e7f8..."
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Maturity:** Advanced | **SLSA relevance:** Level 3+ (model as a declared material)
+
+---
+
+### ML-3: Private Model Registry
+
+**Control:** Production models must be stored in a private, access-controlled model registry — not loaded directly from public model hubs at inference time. The registry enforces integrity checks before serving models.
+
+**Rationale:** Loading models from public hubs at inference time creates a runtime dependency on external availability and introduces the risk of model substitution. A private registry provides the same security properties as a private package registry for code: controlled ingress, integrity verification, and access logging.
+
+**Implementation options:**
+
+| Option | Description | Use Case |
+|---|---|---|
+| Hugging Face Enterprise Hub | Private organization hub with SSO and access controls | Organizations already on Hugging Face |
+| MLflow Model Registry | Open source model registry with versioning and access control | Self-hosted; PyTorch/TensorFlow workflows |
+| DVC (Data Version Control) with S3 | Git-native model versioning backed by S3 | Teams using DVC for data/model management |
+| OCI registry (Docker Hub / ECR / ACR) | Bundle model weights as OCI artifacts alongside container image | Container-native deployment; enables Cosign signing |
+| Weights & Biases (W&B) Artifacts | Artifact registry with lineage tracking and access control | Teams using W&B for experiment tracking |
+
+**Bundling models as OCI artifacts (enables Cosign signing):**
+
+```dockerfile
+# Package model weights alongside inference service in container
+FROM python:3.12-slim AS base
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --require-hashes -r requirements.txt
+
+# Copy model weights from a content-addressed store (not downloaded at runtime)
+COPY --from=model-store:sha256:abc123 /models/fraud-classifier /app/models/fraud-classifier
+
+COPY src/ .
+CMD ["python", "serve.py"]
+```
+
+The resulting container image is signed with Cosign, meaning both the code and the model weights are covered by the signature and provenance attestation.
+
+**Maturity:** Standard
+
+---
+
+### ML-4: Model Vulnerability Scanning
+
+**Control:** Models must be scanned for known vulnerabilities in their serialization format and for malicious payload embedding before being promoted to the production registry. Unsafe serialization formats must not be used for untrusted model sources.
+
+**Rationale:** Certain model serialization formats (Python pickle, PyTorch `.pt` files saved with `torch.save()`) can embed arbitrary executable Python code. A backdoored model distributed as a pickle file executes malicious code when loaded — analogous to a malicious package executing at install time.
+
+**Unsafe serialization formats to prohibit from untrusted sources:**
+
+| Format | Risk | Safe Alternative |
+|---|---|---|
+| Python pickle (`.pkl`) | Arbitrary code execution on deserialization | SafeTensors, ONNX |
+| PyTorch `.pt` (pickle-based) | Arbitrary code execution on deserialization | SafeTensors (`model.safetensors`) |
+| `cloudpickle` | Arbitrary code execution | SafeTensors, ONNX |
+| Keras H5 with Lambda layers | Lambda layers can contain arbitrary code | SavedModel format without Lambda layers |
+
+**Implementation — scan with Protect AI ModelScan or equivalent:**
+
+```bash
+# ModelScan: detect malicious payloads in model files before loading
+pip install modelscan
+
+# Scan a downloaded model before adding it to the registry
+modelscan scan -p ./downloaded-model/ --output-format json
+
+# Integrate into CI for models checked into the repository
+modelscan scan -p ./models/ \
+  --output-format json \
+  --output-file modelscan-results.json
+
+# Fail CI if any malicious payload is detected
+python -c "
+import json, sys
+results = json.load(open('modelscan-results.json'))
+if results.get('total_issues', 0) > 0:
+    print('FAIL: Malicious payload detected in model file')
+    sys.exit(1)
+print('PASS: No malicious payloads detected')
+"
+```
+
+**Require SafeTensors format for all model weights from external sources:**
+
+```python
+# Enforce SafeTensors loading — no pickle
+from safetensors.torch import load_file
+
+# Safe: SafeTensors format cannot execute arbitrary code on load
+model_weights = load_file("model.safetensors")
+
+# If loading from Hugging Face, specify use_safetensors=True
+from transformers import AutoModelForCausalLM
+model = AutoModelForCausalLM.from_pretrained(
+    "org/model-name",
+    revision="abc123",
+    use_safetensors=True  # Refuse to load if SafeTensors not available
+)
+```
+
+**Maturity:** Standard
+
+---
+
+### ML-5: Model Access Control and Audit Logging
+
+**Control:** Access to production model weights must be subject to the same access controls as production secrets: role-based access, audit logging of all access events, and quarterly access reviews.
+
+**Rationale:** Model weights may encode sensitive information from training data (memorized PII, business logic, proprietary data). They are also a high-value target for intellectual property theft. Access controls and audit logging provide the same benefits as for other sensitive assets.
+
+**Implementation:**
+
+| Control | Implementation |
+|---|---|
+| RBAC for model registry | Production models accessible only by inference service accounts and authorized ML engineers |
+| Service account for inference | Inference service uses a dedicated, least-privilege service account to pull model weights at startup |
+| Audit logging | All model registry access (pull, push, delete) logged with principal identity and timestamp |
+| Access review | Quarterly review of who can access production model weights |
+| Egress control | Inference service containers cannot exfiltrate model weights (egress allowlisting) |
+
+---
+
+### ML-6: Mapping to Traditional Supply Chain Controls
+
+AI/ML model supply chain controls complement — and in some cases extend — the traditional software supply chain controls in this framework:
+
+| Software Supply Chain Control | Model Supply Chain Equivalent |
+|---|---|
+| DEP-1/DEP-2: Dependency pinning and lockfiles | ML-1: Pin to specific model commit SHA; record hash |
+| SBOM-1: SBOM generation | ML-2: Model Bill of Materials (CycloneDX 1.6+ ML model component) |
+| REG-1/REG-2: Private registry and access control | ML-3: Private model registry with access controls |
+| BUILD-3: Hermetic build inputs | ML-4: SafeTensors-only loading; ModelScan before promotion |
+| SIGN-1: Artifact signing | Bundle model in container image and sign the container with Cosign |
+| PROV-1: Provenance attestation | Generate SLSA provenance for container images containing model weights |
+
+The goal is a unified supply chain assurance posture: the same integrity guarantees that apply to code packages apply to the models those packages serve.
 
 **Maturity:** Standard
