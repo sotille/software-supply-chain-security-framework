@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://techstream.app">
+    <img src="https://techstream.app/images/techstream-icon.svg" width="72" height="72" alt="TechStream" />
+  </a>
+</p>
+
 # Software Supply Chain Security Framework
 
 > A comprehensive, enterprise-grade framework for securing the software supply chain — from source code through build, packaging, distribution, and deployment — using SLSA, SBOM, artifact signing, and provenance-based trust.
