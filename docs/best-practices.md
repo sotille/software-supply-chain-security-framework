@@ -372,4 +372,157 @@ Components present in one SBOM but not the other indicate gaps in either generat
 | **Snyk** | Developer-facing with broad language support | Developer IDE integration, PR decorations | Cloud/Self-hosted |
 | **JFrog Xray** | Artifact registry–integrated scanning | Binary scanning without rebuild; paired with Artifactory | Cloud/Self-hosted |
 
+---
+
+## SBOM Fleet Management: Operational Patterns
+
+Generating SBOMs per artifact is table stakes. The operational value of SBOMs is realized when they are managed across the fleet — enabling instant queries for affected services when a new vulnerability is disclosed.
+
+### Fleet Query Pattern: "Who uses Log4j 2.14.x?"
+
+The core use case: when CVE-2021-44228 (Log4Shell) was disclosed, organizations without SBOM fleet management spent days identifying affected services. With a centralized SBOM store, the query is:
+
+**Using Dependency-Track (REST API):**
+```bash
+# Find all projects with a specific component version
+curl -s "https://dependency-track.example.com/api/v1/component/identity" \
+  -H "X-Api-Key: ${DT_API_KEY}" \
+  -G \
+  --data-urlencode "purl=pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1" \
+  | jq '[.[] | {project: .project.name, version: .project.version}]'
+```
+
+**Using Dependency-Track SQL (for self-hosted PostgreSQL-backed installs):**
+```sql
+-- Find all projects containing a specific component
+SELECT
+  p.name AS project_name,
+  p.version AS project_version,
+  c.purl AS component_purl,
+  c.version AS component_version
+FROM project p
+JOIN project_property pp ON p.id = pp.project_id
+JOIN component c ON c.project_id = p.id
+WHERE c.name = 'log4j-core'
+  AND c.group_name = 'org.apache.logging.log4j'
+  AND c.version = '2.14.1'
+ORDER BY p.name;
+```
+
+**Using Grype in batch mode (filesystem-based fleet scan):**
+```bash
+#!/bin/bash
+# Batch scan all SBOMs in an S3 bucket for a specific CVE
+CVE_ID="CVE-2021-44228"
+SBOM_BUCKET="s3://company-sboms"
+
+aws s3 ls ${SBOM_BUCKET}/ --recursive | awk '{print $4}' | while read key; do
+  local_file=$(basename "$key")
+  aws s3 cp "${SBOM_BUCKET}/${key}" "/tmp/${local_file}" --quiet
+  result=$(grype "sbom:/tmp/${local_file}" --output json 2>/dev/null | \
+    jq --arg cve "$CVE_ID" '[.matches[] | select(.vulnerability.id == $cve)]')
+  if [ "$(echo "$result" | jq 'length')" -gt "0" ]; then
+    echo "AFFECTED: ${key}"
+    echo "$result" | jq '.[] | {component: .artifact.name, version: .artifact.version}'
+  fi
+  rm -f "/tmp/${local_file}"
+done
+```
+
+### SBOM Accuracy Validation
+
+An SBOM is only useful if it accurately reflects the artifact's actual component inventory. Validate SBOM completeness as part of the CI pipeline:
+
+```bash
+#!/bin/bash
+# SBOM completeness check: compare component counts across generators
+# A >10% discrepancy warrants investigation
+
+IMAGE="myimage:v1.2.3"
+THRESHOLD=0.10
+
+syft "$IMAGE" -o cyclonedx-json=syft.cdx.json --quiet
+trivy image --format cyclonedx --output trivy.cdx.json "$IMAGE" --quiet 2>/dev/null
+
+SYFT_COUNT=$(jq '.components | length' syft.cdx.json)
+TRIVY_COUNT=$(jq '.components | length' trivy.cdx.json)
+
+echo "Syft component count: ${SYFT_COUNT}"
+echo "Trivy component count: ${TRIVY_COUNT}"
+
+# Calculate discrepancy ratio
+DIFF=$(echo "scale=4; (${SYFT_COUNT} - ${TRIVY_COUNT}) / ${SYFT_COUNT}" | bc | tr -d -)
+EXCEEDS=$(echo "${DIFF} > ${THRESHOLD}" | bc)
+
+if [ "$EXCEEDS" -eq 1 ]; then
+  echo "WARNING: Component count discrepancy ${DIFF} exceeds threshold ${THRESHOLD}"
+  echo "Investigate packaging systems with inconsistent coverage:"
+  # Find components in Syft not in Trivy
+  jq -r '.components[].purl // .components[].name' syft.cdx.json | sort > /tmp/syft-purls.txt
+  jq -r '.components[].purl // .components[].name' trivy.cdx.json | sort > /tmp/trivy-purls.txt
+  comm -23 /tmp/syft-purls.txt /tmp/trivy-purls.txt | head -20
+  exit 1
+fi
+
+echo "SBOM completeness check passed (discrepancy: ${DIFF})"
+```
+
+**Recommended completeness thresholds by artifact type:**
+
+| Artifact Type | Acceptable Discrepancy | Notes |
+|---|---|---|
+| JVM (Maven/Gradle) | < 5% | Both tools have mature JVM coverage |
+| Python (pip) | < 10% | Editable installs may not appear in all generators |
+| Node.js (npm/yarn) | < 5% | Both tools have mature npm coverage |
+| Go (modules) | < 10% | Vendored dependencies may differ |
+| Multi-stage container image | < 20% | Base layer + application layer detection varies |
+
+### Dependency Drift Detection
+
+SBOMs describe what was present at build time. Runtime environments can diverge from declared SBOMs due to container layer injection, package installation during container startup, or runtime dependency fetching. Detect drift with periodic re-scanning:
+
+```bash
+#!/bin/bash
+# Detect runtime package drift: compare running container packages
+# against the SBOM generated at build time
+
+CONTAINER_ID="$1"
+SBOM_FILE="$2"  # Path to the SBOM generated during CI
+
+# Generate SBOM from running container
+docker exec "$CONTAINER_ID" sh -c "apt list --installed 2>/dev/null" > /tmp/runtime-packages.txt
+# Or for RPM-based:
+# docker exec "$CONTAINER_ID" rpm -qa --queryformat "%{NAME} %{VERSION}\n" > /tmp/runtime-packages.txt
+
+# Extract declared packages from SBOM (OS packages only)
+jq -r '.components[] | select(.type == "operating-system" or .type == "library") | "\(.name) \(.version)"' \
+  "$SBOM_FILE" | sort > /tmp/declared-packages.txt
+
+# Find packages present at runtime but not in SBOM
+runtime_only=$(comm -23 \
+  <(sort /tmp/runtime-packages.txt) \
+  <(sort /tmp/declared-packages.txt))
+
+if [ -n "$runtime_only" ]; then
+  echo "DRIFT DETECTED — packages present at runtime but not in build-time SBOM:"
+  echo "$runtime_only"
+  echo "Investigate: runtime installation, entrypoint script modifications, or SBOM generation gap"
+fi
+```
+
+**Common causes of drift to investigate:**
+- Entrypoint scripts that run `apt install` or `pip install` at container startup
+- Kubernetes init containers that install packages into shared volumes
+- Mutating admission webhooks that inject sidecars containing additional packages
+- Application code that installs dependencies lazily at first use
+
+### SBOM Retention and Audit Requirements
+
+| Retention Requirement | Duration | Rationale |
+|---|---|---|
+| SBOM per released artifact | Lifetime of artifact support | Required for post-incident forensics and EOL notification |
+| SBOM per CI build (all builds) | 90 days | Enables investigation of which build introduced a vulnerability |
+| Vulnerability scan results against SBOM | 1 year | Compliance evidence for SOC 2 CC6, PCI DSS 6.3 |
+| SBOM completeness check results | 90 days | Auditable evidence that SBOM quality controls were applied |
+
 For most organizations: use **Dependency-Track** as the SBOM fleet management platform (ingests SBOMs from all build pipelines), with **Grype** for fast local development scanning and CI blocking decisions.

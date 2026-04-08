@@ -9,6 +9,7 @@ Format: `[version] — [date] — [summary of changes]`
 
 - Added CHANGELOG.md (this file) for version tracking
 - Added "Learning Resources" section to README.md linking to Book 2, techstream-learn labs, and techstream.app
+- docs/best-practices.md: Added SBOM Fleet Management Operational Patterns section covering fleet query patterns (Dependency-Track REST API, batch Grype), SBOM accuracy validation with completeness thresholds by artifact type, dependency drift detection for runtime environments, and SBOM retention requirements table (2026-04-07)
 
 ## [1.0.0] — 2024-01-15
 
