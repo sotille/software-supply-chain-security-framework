@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+title: "Software Supply Chain Security Framework"
+message: "If you reference, cite, or build upon this framework, please cite it as below."
+type: software
+authors:
+  - family-names: Sotille
+    given-names: Felipe
+    affiliation: "TechStream (Independent)"
+    email: "fsotille@gmail.com"
+repository-code: "https://github.com/sotille/software-supply-chain-security-framework"
+url: "https://www.techstream.app"
+license: Apache-2.0
+version: "1.0.0"
+date-released: "2026-05-17"
+abstract: >-
+  Comprehensive software supply chain security framework: SBOM generation and queryability (CycloneDX/SPDX), artifact signing with Sigstore/Cosign, SLSA build provenance, dependency security, third-party risk management, and runtime admission control. Directly implements EO 14028 Section 4 mandates including the SBOM requirement.
+keywords:
+  - sbom
+  - slsa
+  - sigstore
+  - cosign
+  - supply-chain-security
+  - eo-14028
+  - cyclonedx
+  - spdx
