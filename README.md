@@ -145,6 +145,18 @@ The Techstream Book Series and hands-on lab companion extend the concepts in thi
 
 ---
 
+
+---
+
+## Related Publications
+
+The patterns and methodologies in this framework are translated for practitioners in the TechStream article series:
+
+- **"The Four Layers of Software Supply Chain Integrity: Why Most SBOMs Are Theater"** (Medium, May 2026) — [Read article](https://medium.com/@fsotille/the-four-layers-of-software-supply-chain-integrity-995824dbead0) — distills the methodology in `software-supply-chain-security-framework`.
+- **"Why Your AI Agent Is the Next SolarWinds: Supply Chain Security for the Agentic Era"** (Medium, May 2026) — bridges `ai-devsecops-framework`, `forensics-and-incident-response-framework`, and `software-supply-chain-security-framework`.
+
+These articles are designed for U.S. practitioners implementing federal mandates including Executive Order 14028, Executive Order 14306, NIST SP 800-218 (SSDF), and NIST SP 1800-44 (NCCoE DevSecOps Practices, March 2026 preliminary draft).
+
 ## License
 
 Copyright 2024 Techstream
