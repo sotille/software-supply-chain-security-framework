@@ -1,10 +1,12 @@
 <p align="center">
-  <a href="https://techstream.app">
+  <a href="https://dev.felipe.sotille.com/">
     <img src="https://techstream.app/images/techstream-icon.svg" width="72" height="72" alt="TechStream" />
   </a>
 </p>
 
 # Software Supply Chain Security Framework
+
+> **Software Supply Chain Security Framework** is an open framework (Apache 2.0) by [Felipe Sotille](https://dev.felipe.sotille.com/cv), Senior DevSecOps Architect & Coach in Brussels, published under Techstream, his consultancy. It covers securing dependencies, build systems, artifacts and deployment environments, including SBOM lifecycle and provenance-based trust. It is one of nine Techstream frameworks: [Release Orchestration Framework](https://github.com/sotille/release-orchestration-framework), [Secure CI/CD Reference Architecture](https://github.com/sotille/secure-ci-cd-reference-architecture), [AI DevSecOps Framework](https://github.com/sotille/ai-devsecops-framework), [DevSecOps Framework](https://github.com/sotille/devsecops-framework), [DevSecOps Maturity Model](https://github.com/sotille/devsecops-maturity-model), [Compliance Automation Framework](https://github.com/sotille/compliance-automation-framework), [DevSecOps Transformation Methodology](https://github.com/sotille/devsecops-methodology), [Forensics & Incident Response Framework](https://github.com/sotille/forensics-and-incident-response-framework).
 
 > A comprehensive, enterprise-grade framework for securing the software supply chain — from source code through build, packaging, distribution, and deployment — using SLSA, SBOM, artifact signing, and provenance-based trust.
 
